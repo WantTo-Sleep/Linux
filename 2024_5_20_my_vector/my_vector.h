@@ -1,5 +1,11 @@
 #pragma once
 
+// 优化了拷贝构造和赋值运算符重载
+// 优化了对自定义对象扩容时引起的野指针问题
+// 考虑了_finish改变时自定义对象不调用析构函数可能导致的内存泄漏问题
+// 引入杨辉三角这个题来验证
+// 其余测试用例放入test.cpp中
+
 namespace sjx
 {
 	template<class T>
@@ -10,8 +16,13 @@ namespace sjx
 		typedef const T* const_iterator;
 
 		vector() :_start(nullptr), _finish(nullptr), _endOfStorage(nullptr) {}
-		vector(size_t n, const T& val = T())
+		vector(size_t n, const T& val = T()) :_start(nullptr), _finish(nullptr), _endOfStorage(nullptr)
 		{
+			// 这个构造函数目前有一点问题，以我目前的能力暂时无法很好的解决
+			// vector<int> v(5, 2);
+			// 上述代码的本意是构造含有5个2的vector<int>对象
+			// 但实际上，运行时会调用vector(InputIterator first, InputIterator last)
+			// 这个迭代器构造
 			reserve(n);
 			for (int i = 0; i < n; ++i)
 			{
@@ -19,47 +30,49 @@ namespace sjx
 			}
 		}
 		template<class InputIterator>
-		vector(InputIterator first, InputIterator last)
+		vector(InputIterator first, InputIterator last) :_start(nullptr), _finish(nullptr), _endOfStorage(nullptr)
 		{
 			assert(first <= last);
 			while (first != last)
 			{
-				push_back(*(iterator)first);
+				push_back(*first);
 				++first;
 			}
 		}
-		vector(const vector& x)
+		vector(const vector& x) :_start(nullptr), _finish(nullptr), _endOfStorage(nullptr)
 		{
-			// 拷贝构造，不需要考虑释放原空间
-			if (x.capacity() != 0)
-			{
-				_start = new T[x.capacity()];
-				memcpy(_start, x._start, sizeof(T) * x.size());
-				_finish = _start + x.size();
-				_endOfStorage = _start + x.capacity();
-			}
+			// 拷贝构造，先用x的内容调用迭代器构造构造出v
+			// 再将this和v的内容交换
+			vector<T> v(x.begin(), x.end());
+			swap(v);
 		}
 		~vector()
 		{
 			delete[] _start;
 			_start = _finish = _endOfStorage = nullptr;
 		}
-		vector& operator=(const vector& x)
+		vector<T>& operator=(vector<T> x)
 		{
-			if (x._start == nullptr)
-			{
-				// 赋值运算符重载，需要考虑释放原空间
-				delete[] _start;
-				_start = _finish = _endOfStorage = nullptr;
-			}
-			else if (this != &x) // 如果两个操作数相等，直接返回。
-			{
-				delete[] _start;
-				reserve(x.capacity());
-				memcpy(_start, x._start, sizeof(T) * x.size());
-				_finish = _start + x.size();
-				_endOfStorage = _start + x.capacity();
-			}
+			// 下面写了一大堆，不如直接叫一个打工人来打工
+			// 因为参数x是传值拷贝，因此直接交换就可以
+			// 有一些极少数情况：v1 = v1，两个相同的对象赋值
+			// 这种情况下也不会出错，因此就忽略不讨论了。
+			swap(x);
+
+			//if (x._start == nullptr)
+			//{
+			//	// 赋值运算符重载，需要考虑释放原空间
+			//	delete[] _start;
+			//	_start = _finish = _endOfStorage = nullptr;
+			//}
+			//else if (this != &x) // 如果两个操作数相等，直接返回。
+			//{
+			//	delete[] _start;
+			//	reserve(x.capacity());
+			//	memcpy(_start, x._start, sizeof(T) * x.size());
+			//	_finish = _start + x.size();
+			//	_endOfStorage = _start + x.capacity();
+			//}
 			return *this;
 		}
 
@@ -88,6 +101,7 @@ namespace sjx
 		}
 		void resize(size_t n, const T& val = T())
 		{
+			// 如果n小于size()，就说明要删除数据，反之，就要在后面添加
 			if (n < size())
 			{
 				erase(begin() + n, end());
@@ -112,11 +126,21 @@ namespace sjx
 			{
 				iterator tmp = new T[n];
 				size_t oldSize = size();
-				// 如果_start不为空，需要把旧数据拷贝到新空间
+				// 如果_start不为空，需要把旧数据移动到新空间
 				if (_start)
 				{
-					memcpy(tmp, _start, sizeof(T) * oldSize);
-					// 释放原内存空间
+					// memcpy对自定义类型其实并不会很好的适用
+					// 例如，vector<string>类型扩容，如果直接内存拷贝
+					// 拷贝的其实是string的成员变量，也就是指针
+					// 但拷贝完之后要释放原内存空间，也就是要delete[] _start
+					// 对于string类型，会调用它的析构函数，对指针指向的空间也要释放
+					// 导致新开辟的空间中拷贝过来的string成员变量的指针变成野指针
+					// memcpy(tmp, _start, sizeof(T) * oldSize);
+					
+					for (size_t i = 0; i < oldSize; ++i)
+					{
+						tmp[i] = _start[i];
+					}
 					delete[] _start;
 				}
 				_start = tmp;
@@ -129,12 +153,12 @@ namespace sjx
 		T& operator[](size_t pos)
 		{
 			assert(pos < size());
-			return *(_start + pos);
+			return _start[pos];
 		}
 		const T& operator[](size_t pos) const
 		{
 			assert(pos < size());
-			return *(_start + pos);
+			return _start[pos];
 		}
 
 		// Modifiers:
@@ -142,7 +166,7 @@ namespace sjx
  		{
 			if (_finish == _endOfStorage)
 			{
-				size_t newCapacity = _start ? capacity() * 2 : 4;
+				size_t newCapacity = capacity() == 0 ? 4 : capacity() * 2;
 				reserve(newCapacity);
 			}
 
@@ -153,12 +177,14 @@ namespace sjx
 		{
 			assert(!empty());
 			--_finish;
+			(*_finish).~T();
 		}
 		iterator insert(iterator pos, const T& val)
 		{
 			assert(pos >= begin() && pos <= end());
-			int n = pos - begin();
+
 			// 如果发生扩容，pos就不再适用，需要记录相对位置
+			int n = pos - begin();
 			if (_finish == _endOfStorage)
 			{
 				size_t newCapacity = _start ? capacity() * 2 : 4;
@@ -178,11 +204,16 @@ namespace sjx
 		void insert(iterator pos, size_t n, const T& val)
 		{
 			assert(pos >= begin() && pos <= end());
-			int i = pos - begin();
+
 			// 如果发生扩容，pos就不再适用，需要记录相对位置
+			int i = pos - begin();
 			if (_finish + n > _endOfStorage)
 			{
 				size_t newCapacity = _start ? capacity() * 2 : 4;
+				if (size() + n > newCapacity)
+				{
+					newCapacity = size() + n;
+				}
 				reserve(newCapacity);
 			}
 			pos = begin() + i;
@@ -235,12 +266,23 @@ namespace sjx
 			_finish = first + i;
 			return first;
 		}
+		void swap(vector<T>& x)
+		{
+			std::swap(x._start, _start);
+			std::swap(x._finish, _finish);
+			std::swap(x._endOfStorage, _endOfStorage);
+		}
+		void clear()
+		{
+			_finish = _start;
+		}
 
 	private:
-		iterator _start; // 数据的开始位置
-		iterator _finish; // 最后一个数据的下一个位置
+		iterator _start;       // 数据的开始位置
+		iterator _finish;       // 最后一个数据的下一个位置
 		iterator _endOfStorage; // 最后一个存储空间的下一个位置
 	};
+	
 	template<class T>
 	ostream& operator<<(ostream& out, const vector<T>& v)
 	{
@@ -263,161 +305,56 @@ namespace sjx
 		return out;
 	}
 
-	void test6()
+	class Solution
 	{
-		vector<int> v1;
-		v1.push_back(1);
-		//v1.pop_back();
-		v1.pop_back();
+	public:
+		vector<vector<int>> generate(int numRows)
+		{
+			vector<vector<int>> vv;
 
-		//v1.push_back(2);
-		//v1.push_back(3);
-		//v1.push_back(4);
-		//v1.push_back(5);
-		//v1.push_back(6);
-		//v1.push_back(7);
+			vv.resize(numRows);
 
-		//for (auto e : v1)
-		//{
-		//	cout << e << ' ';
-		//}
-		//cout << endl;
+			for (int i = 0; i < numRows; ++i)
+			{
+				vv[i].resize(i + 1, 1);
+			}
 
-		//vector<int>::iterator it1 = v1.begin();
-		//v1.insert(it1 + 7, 3, 10);
-		//cout << v1 << endl;
+			for (int i = 2; i < numRows; ++i)
+			{
+				for (int j = 1; j < i; ++j)
+				{
+					vv[i][j] = vv[i - 1][j - 1] + vv[i - 1][j];
+				}
+			}
 
-		//v1.resize(0, 1);
-		//cout << v1 << endl;
+			return vv;
+		}
+	};
 
-		//v1.resize(5, 5);
-		//cout << v1 << endl;
+	void test_vector_oj()
+	{
+		//vector<int> v;
+		//v.push_back(1);
+		//v.pop_back();
 
-		//v1.insert(it1, 2);
-		//cout << v1 << endl;
+		// 杨辉三角
+		vector<vector<int>> vv = Solution().generate(10);
 
-		//vector<int>::iterator it1 = v1.begin();
-		//vector<int>::iterator it2 = v1.end() - 7;
-		//v1.erase(it1, it2);
-		////v1.erase(v1.erase(it));
-		//for (auto e : v1)
-		//{
-		//	cout << e << ' ';
-		//}
-		//cout << endl;
+		for (int i = 0; i < vv.size(); ++i)
+		{
+			for (int j = 0; j < vv[i].size(); ++j)
+			{
+				cout << vv[i][j] << ' ';
+			}
+			cout << endl;
+		}
+
+		vv.pop_back();
+		vv.pop_back();
+		vv.pop_back();
+		vv.pop_back();
+		vv.pop_back();
+		vv.pop_back();
+
 	}
-
-	//void test1()
-	//{
-	//	vector<int> v1;
-	//	v1.push_back(1);
-	//	v1.push_back(2);
-	//	v1.push_back(3);
-	//	v1.push_back(4);
-	//	v1.push_back(5);
-
-	//	for (auto e : v1)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//	cout << endl;
-	//	for (auto& e : v1)
-	//	{
-	//		++e;
-	//	}
-
-	//	for (auto e : v1)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//	cout << endl;
-
-	//	vector<int> v2(v1.begin(), v1.end());
-	//	for (auto e : v2)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//	vector<int> v3(v1.begin() + 1, v1.end() - 1);
-	//	for (auto e : v3)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//}
-	//void test2()
-	//{
-	//	vector<int> v1(5, 2);
-	//	vector<int> v2(10, 1);
-	//	for (auto e : v1)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//	cout << endl;
-	//	for (auto e : v2)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//	cout << endl;
-	//}
-	//void test3()
-	//{
-	//	vector<int> v1;
-	//	v1.push_back(1);
-	//	v1.push_back(2);
-	//	v1.push_back(3);
-	//	v1.push_back(4);
-	//	v1.push_back(5);
-
-	//	vector<int> v2(v1);
-	//	for (auto e : v2)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//	cout << endl;
-	//	for (auto& e : v2)
-	//	{
-	//		++e;
-	//	}
-	//	vector<int> v3 = v2;
-	//	for (auto e : v3)
-	//	{
-	//		cout << e << ' ';
-	//	}
-	//	cout << endl;
-	//}
-	//void test4()
-	//{
-	//	vector<int> v1;
-	//	v1.push_back(1);
-	//	v1.push_back(2);
-	//	v1.push_back(3);
-	//	v1.push_back(4);
-	//	v1.push_back(5);
-
-	//	vector<int> v2;
-	//	v2 = v1;
-	//	for (auto e : v2)
-	//	{
-	//		cout << e << ' ';
-	//	}
-
-	//	vector<int> v3;
-	//	v2 = v3;
-	//	for (auto e : v2)
-	//	{
-	//		cout << e << ' ';
-	//	}
-
-	//	v1 = v1;
-	//}
-	//void test5()
-	//{
-	//	vector<int> v1;
-	//	v1.resize(10, 2);
-	//	cout << v1 << endl;
-	//	v1.resize(3, 3);
-	//	cout << v1 << endl;
-	//	v1.resize(10, 3);
-	//	cout << v1 << endl;
-
-	//}
 }
